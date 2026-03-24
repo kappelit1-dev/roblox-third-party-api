@@ -20,6 +20,13 @@ It includes API key auth, rate limiting, and proxy endpoints for Roblox public A
 
 Public:
 - `GET /health`
+- `GET /download/roblox-client`
+  - Downloads `ApiClient.server.lua`
+  - Optional query params:
+    - `baseUrl` to prefill `BASE_URL`
+    - `apiKey` to prefill `API_KEY`
+  - Example:
+    - `/download/roblox-client?baseUrl=https://roblox-third-party-api-1.onrender.com`
 
 Protected (require `x-api-key` header):
 - `GET /api/profile/:userId`
@@ -44,6 +51,8 @@ In Roblox Studio:
 3. Set:
    - `BASE_URL` to your deployed API HTTPS URL
    - `API_KEY` to the same key used by your API service
+4. Optional download link:
+   - `https://<your-service>/download/roblox-client?baseUrl=https://<your-service>`
 
 ## 4) Deploy as Third-Party API
 

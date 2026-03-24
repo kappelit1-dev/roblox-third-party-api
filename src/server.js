@@ -1,6 +1,8 @@
 const express = require("express");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
+const path = require("path");
+const fs = require("fs");
 require("dotenv").config();
 
 const app = express();
@@ -9,8 +11,8 @@ const API_KEY = process.env.API_KEY || "change-me";
 const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 60_000);
 const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX || 120);
 
-// Demo storage for in-game currency. Replace with real database in production.
-const coinsStore = new Map();
+// Demo storage for player profiles. Replace with real database in production.
+const profileStore = new Map();
 
 app.use(helmet());
 app.use(express.json({ limit: "128kb" }));
@@ -58,12 +60,62 @@ async function callRoblox(path, options = {}) {
   return data;
 }
 
+function ensureProfile(userId) {
+  let profile = profileStore.get(userId);
+  let created = false;
+
+  if (!profile) {
+    profile = {
+      userId,
+      coins: 0,
+      createdAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString()
+    };
+    profileStore.set(userId, profile);
+    created = true;
+  } else {
+    profile.lastSeenAt = new Date().toISOString();
+  }
+
+  return { profile, created };
+}
+
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
     service: "roblox-third-party-api",
     uptimeSeconds: Math.floor(process.uptime())
   });
+});
+
+app.get("/download/roblox-client", (_req, res) => {
+  const scriptPath = path.join(__dirname, "..", "roblox", "ServerScriptService", "ApiClient.server.lua");
+
+  if (!fs.existsSync(scriptPath)) {
+    return res.status(404).json({ error: "Roblox client script not found" });
+  }
+
+  const fileContent = fs.readFileSync(scriptPath, "utf8");
+  const baseUrl = String(req.query.baseUrl || "").trim();
+  const apiKey = String(req.query.apiKey || "").trim();
+
+  let rendered = fileContent;
+  if (baseUrl) {
+    rendered = rendered.replace(
+      'local BASE_URL = "https://your-public-api-url.com"',
+      `local BASE_URL = "${baseUrl.replace(/"/g, '\\"')}"`
+    );
+  }
+  if (apiKey) {
+    rendered = rendered.replace(
+      'local API_KEY = "replace-with-your-api-key"',
+      `local API_KEY = "${apiKey.replace(/"/g, '\\"')}"`
+    );
+  }
+
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.setHeader("Content-Disposition", 'attachment; filename="ApiClient.server.lua"');
+  return res.status(200).send(rendered);
 });
 
 app.get("/api/profile/:userId", verifyApiKey, async (req, res) => {
@@ -78,10 +130,11 @@ app.get("/api/profile/:userId", verifyApiKey, async (req, res) => {
       )
     ]);
 
-    const balance = coinsStore.get(userId) || 0;
+    const ensured = ensureProfile(userId);
     const thumb = Array.isArray(headshotData.data) ? headshotData.data[0] : null;
 
     return res.json({
+      profileCreated: ensured.created,
       user: {
         id: user.id,
         name: user.name,
@@ -90,7 +143,11 @@ app.get("/api/profile/:userId", verifyApiKey, async (req, res) => {
       },
       avatarHeadshotUrl: thumb ? thumb.imageUrl : null,
       economy: {
-        coins: balance
+        coins: ensured.profile.coins
+      },
+      meta: {
+        createdAt: ensured.profile.createdAt,
+        lastSeenAt: ensured.profile.lastSeenAt
       }
     });
   } catch (error) {
@@ -99,6 +156,19 @@ app.get("/api/profile/:userId", verifyApiKey, async (req, res) => {
       detail: error.data || null
     });
   }
+});
+
+app.post("/api/profile/:userId/init", verifyApiKey, (req, res) => {
+  const userId = parsePositiveInteger(req.params.userId);
+  if (!userId) return res.status(400).json({ error: "Invalid userId" });
+
+  const ensured = ensureProfile(userId);
+  return res.json({
+    success: true,
+    userId,
+    profileCreated: ensured.created,
+    profile: ensured.profile
+  });
 });
 
 app.get("/api/roblox/users/:userId", verifyApiKey, async (req, res) => {
@@ -167,11 +237,10 @@ app.post("/api/reward", verifyApiKey, (req, res) => {
     return res.status(400).json({ error: "Payload must include positive userId and amount" });
   }
 
-  const currentCoins = coinsStore.get(userId) || 0;
-  const newCoins = currentCoins + amount;
-  coinsStore.set(userId, newCoins);
+  const ensured = ensureProfile(userId);
+  ensured.profile.coins += amount;
 
-  return res.json({ success: true, userId, newCoins });
+  return res.json({ success: true, userId, newCoins: ensured.profile.coins });
 });
 
 app.listen(PORT, () => {
